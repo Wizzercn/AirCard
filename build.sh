@@ -27,7 +27,9 @@ cat << 'EOF' > "${CONTENTS_DIR}/Info.plist"
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
+    <string>zh_CN</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>zh_CN</string></array>
     <key>CFBundleExecutable</key>
     <string>AirCard</string>
     <key>CFBundleIdentifier</key>

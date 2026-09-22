@@ -16,22 +16,27 @@ struct DeviceInfo: Codable {
 
 struct CardItem: Identifiable, Hashable {
     let id: String
+    var name: String = ""
+    var logLabel: String { name.isEmpty ? id : "\(name)（\(id)）" }
     var isSelected: Bool = true
     var customImageURL: URL? = nil
     var customImage: NSImage? = nil
+    var appliedImage: NSImage? = nil
+    var previewImage: NSImage? { customImage ?? appliedImage }
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+        hasher.combine(name)
     }
     
     static func == (lhs: CardItem, rhs: CardItem) -> Bool {
-        lhs.id == rhs.id && lhs.isSelected == rhs.isSelected && lhs.customImageURL == rhs.customImageURL
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.isSelected == rhs.isSelected && lhs.customImageURL == rhs.customImageURL
     }
 }
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case walletCards = "Apple Wallet"
-    case passcodeThemes = "Passcode (.passthm)"
+    case walletCards = "钱包卡片"
+    case passcodeThemes = "密码主题 (.passthm)"
     var id: String { rawValue }
 }
 
@@ -45,35 +50,35 @@ struct PasscodeThemeInfo: Identifiable {
 }
 
 enum PasscodeTabMode: String, CaseIterable, Identifiable {
-    case applyTheme = "Apply .passthm"
-    case themeCreator = "Theme Creator"
+    case applyTheme = "应用主题"
+    case themeCreator = "主题编辑器"
     var id: String { rawValue }
 }
 
 enum CreatorSubMode: String, CaseIterable, Identifiable {
-    case posterSlice = "Poster Slice (Puzzle)"
-    case individualKeys = "Individual Keys"
+    case posterSlice = "海报切片（拼图）"
+    case individualKeys = "独立按键"
     var id: String { rawValue }
 }
 
 enum PasscodeLanguageTarget: String, CaseIterable, Identifiable {
-    case all = "All Languages (Universal)"
-    case uk = "Ukrainian (uk)"
-    case ru = "Russian (ru)"
-    case en = "English (en)"
-    case other = "Other / Fallback"
-    case es = "Spanish (es)"
-    case de = "German (de)"
-    case fr = "French (fr)"
-    case pl = "Polish (pl)"
-    case it = "Italian (it)"
-    case pt = "Portuguese (pt)"
-    case tr = "Turkish (tr)"
-    case ja = "Japanese (ja)"
-    case ko = "Korean (ko)"
-    case zh = "Chinese (zh)"
-    case ar = "Arabic (ar)"
-    case he = "Hebrew (he)"
+    case all = "所有语言（通用）"
+    case uk = "乌克兰语 (uk)"
+    case ru = "俄语 (ru)"
+    case en = "英语 (en)"
+    case other = "其他 / 默认"
+    case es = "西班牙语 (es)"
+    case de = "德语 (de)"
+    case fr = "法语 (fr)"
+    case pl = "波兰语 (pl)"
+    case it = "意大利语 (it)"
+    case pt = "葡萄牙语 (pt)"
+    case tr = "土耳其语 (tr)"
+    case ja = "日语 (ja)"
+    case ko = "韩语 (ko)"
+    case zh = "中文 (zh)"
+    case ar = "阿拉伯语 (ar)"
+    case he = "希伯来语 (he)"
     
     var id: String { rawValue }
     
@@ -101,9 +106,9 @@ enum PasscodeLanguageTarget: String, CaseIterable, Identifiable {
 }
 
 enum PasscodeBoldTarget: String, CaseIterable, Identifiable {
-    case both = "Universal (Regular + Bold)"
-    case boldOnly = "Bold Text Only (Fast)"
-    case regularOnly = "Regular Font Only (Fast)"
+    case both = "通用（常规 + 粗体）"
+    case boldOnly = "仅粗体（快速）"
+    case regularOnly = "仅常规字体（快速）"
     
     var id: String { rawValue }
     
@@ -433,7 +438,7 @@ class PasscodeThemeExporter {
             throw NSError(
                 domain: "PasscodeThemeExporter",
                 code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to create .passthm zip archive (exit code \(process.terminationStatus))"]
+                userInfo: [NSLocalizedDescriptionKey: "无法创建 .passthm 压缩包（退出码 \(process.terminationStatus)）"]
             )
         }
     }
@@ -486,7 +491,7 @@ class AppViewModel: ObservableObject {
     
     @Published var isFlashing = false
     @Published var progress: Double = 0.0
-    @Published var statusText: String = "Ready"
+    @Published var statusText: String = "就绪"
     @Published var logs: [String] = []
     @Published var showSuccessAlert = false
     @Published var errorMessage: String?
@@ -497,6 +502,7 @@ class AppViewModel: ObservableObject {
     
     private var scanProcess: Process?
     private let scriptDir: String
+    private let cardNamesKey = "aircard.cardNames"
     private let storageKey = "mak5er.aircard.savedCards"
     private let legacyStorageKey1 = "mak5er.savedCards"
     private let legacyStorageKey2 = "LumiCards.savedCards"
@@ -654,13 +660,54 @@ class AppViewModel: ObservableObject {
         ]
         loaded.removeAll { dummyHashes.contains($0) || ($0.contains("-") && $0.count == 36) }
         
-        self.cards = loaded.map { CardItem(id: $0, isSelected: true) }
-        log("Loaded \(cards.count) real card(s) from storage.")
+        let names = UserDefaults.standard.dictionary(forKey: cardNamesKey) as? [String: String] ?? [:]
+        self.cards = loaded.map { makeCard(id: $0, name: names[$0] ?? "") }
+        log("已从本地加载 \(cards.count) 张卡片。")
     }
     
+    private func appliedSkinURL(for id: String) -> URL {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AirCard/AppliedSkins", isDirectory: true)
+        // Card hashes may contain slashes; encode the identifier as a safe filename.
+        let filename = id.utf8.map { String(format: "%02x", $0) }.joined()
+        return root.appendingPathComponent(filename + ".png")
+    }
+
+    private func makeCard(id: String, name: String = "") -> CardItem {
+        var card = CardItem(id: id, name: name)
+        card.appliedImage = NSImage(contentsOf: appliedSkinURL(for: id))
+        return card
+    }
+
+    func rememberAppliedSkin(cardId: String, preparedURL: URL, originalURL: URL) {
+        do {
+            let data = try Data(contentsOf: preparedURL)
+            guard let image = NSImage(data: data) else { return }
+            let destination = appliedSkinURL(for: cardId)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: destination, options: .atomic)
+            if let index = cards.firstIndex(where: { $0.id == cardId }) {
+                cards[index].appliedImage = image
+                // Keep a newer selection if the user changed the image during writing.
+                if cards[index].customImageURL == originalURL {
+                    cards[index].customImageURL = nil
+                    cards[index].customImage = nil
+                }
+            }
+            log("已保存上次写入的皮肤预览：\(cardId)")
+        } catch {
+            log("皮肤已写入，但本地预览保存失败：\(error.localizedDescription)")
+        }
+    }
+
     func saveCards() {
         let hashes = cards.map { $0.id }
         UserDefaults.standard.set(hashes, forKey: storageKey)
+        // Keep the existing hash-only file compatible with the Python backend.
+        let names = cards.reduce(into: [String: String]()) { result, card in
+            if !card.name.isEmpty { result[card.id] = card.name }
+        }
+        UserDefaults.standard.set(names, forKey: cardNamesKey)
         
         let jsonPath = NSString(string: "~/.aircard_cards.json").expandingTildeInPath
         if let data = try? JSONEncoder().encode(hashes) {
@@ -674,9 +721,9 @@ class AppViewModel: ObservableObject {
         for comp in components {
             let clean = comp.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "."))
             if clean.count >= 16 && clean.count <= 64 && !cards.contains(where: { $0.id == clean }) {
-                cards.append(CardItem(id: clean, isSelected: true))
+                cards.append(makeCard(id: clean))
                 addedCount += 1
-                log("Added card: \(clean)")
+                log("已添加卡片： \(clean)")
             }
         }
         if addedCount > 0 {
@@ -684,16 +731,24 @@ class AppViewModel: ObservableObject {
         }
     }
     
+    func renameCard(id: String, name: String) {
+        guard let index = cards.firstIndex(where: { $0.id == id }) else { return }
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        cards[index].name = cleaned
+        saveCards()
+        log(cleaned.isEmpty ? "已恢复卡片默认名称：\(id)" : "卡片已重命名为“\(cleaned)”：\(id)")
+    }
+
     func deleteCard(id: String) {
         cards.removeAll { $0.id == id }
         saveCards()
-        log("Removed card: \(id)")
+        log("已移除卡片： \(id)")
     }
     
     func clearAllCards() {
         cards.removeAll()
         saveCards()
-        log("Cleared all cards.")
+        log("已清空所有卡片。")
     }
     
     func setCardImage(for cardId: String, url: URL) {
@@ -701,7 +756,7 @@ class AppViewModel: ObservableObject {
             cards[idx].customImageURL = url
             cards[idx].customImage = NSImage(contentsOf: url)
             cards[idx].isSelected = true
-            log("Assigned custom skin to card: \(cardId.prefix(12))...")
+            log("已为卡片设置皮肤： \(cards[idx].logLabel)")
         }
     }
     
@@ -709,7 +764,7 @@ class AppViewModel: ObservableObject {
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = nil
             cards[idx].customImage = nil
-            log("Cleared custom skin for: \(cardId.prefix(12))...")
+            log("已清除卡片皮肤： \(cards[idx].logLabel)")
         }
     }
     
@@ -717,7 +772,7 @@ class AppViewModel: ObservableObject {
     
     func checkDevice() {
         isCheckingDevice = true
-        statusText = "Checking connected devices..."
+        statusText = "正在检查设备连接…"
         let scriptDir = self.scriptDir
         
         Task.detached {
@@ -741,25 +796,25 @@ class AppViewModel: ObservableObject {
                         self.device = dev
                         self.isCheckingDevice = false
                         if dev.connected {
-                            self.statusText = "Connected to \(dev.name ?? "iPhone")"
-                            self.log("Device connected: \(dev.name ?? "iPhone") (\(dev.product ?? ""), iOS \(dev.version ?? ""))")
+                            self.statusText = "已连接 \(dev.name ?? "iPhone")"
+                            self.log("设备已连接： \(dev.name ?? "iPhone") (\(dev.product ?? ""), iOS \(dev.version ?? ""))")
                         } else if dev.error == "device_helper_missing" {
-                            self.statusText = "Device tools are missing from this build."
-                            self.log("Bundled device_helper not found — detection cannot run.")
+                            self.statusText = "当前版本缺少设备辅助工具。"
+                            self.log("缺少 device_helper，无法检测设备。")
                         } else {
-                            self.statusText = "No iPhone found. Please connect via USB."
+                            self.statusText = "未发现 iPhone，请检查连接。"
                         }
                     }
                 } else {
                     await MainActor.run {
                         self.isCheckingDevice = false
-                        self.statusText = "No iPhone found. Please connect via USB."
+                        self.statusText = "未发现 iPhone，请检查连接。"
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.isCheckingDevice = false
-                    self.statusText = "Device detection failed: \(error.localizedDescription)"
+                    self.statusText = "设备检测失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -778,17 +833,17 @@ class AppViewModel: ObservableObject {
     func startCardScanning() {
         guard !isScanningCards else { return }
         guard let deviceHelper = AppViewModel.deviceHelperExecutableURL else {
-            errorMessage = "Device tools are missing from this build."
-            log("Bundled device_helper not found — cannot scan.")
+            errorMessage = "当前版本缺少设备辅助工具。"
+            log("缺少 device_helper，无法扫描。")
             return
         }
         guard let udid = device?.udid else {
-            errorMessage = "No iPhone connected."
+            errorMessage = "尚未连接 iPhone。"
             return
         }
         isScanningCards = true
-        statusText = "Double-click Side button, pass Face ID, then tap your card..."
-        log("Started scanning device logs for cards...")
+        statusText = "双击侧边按钮，通过面容 ID 验证，然后轻点卡片…"
+        log("已开始扫描设备日志以查找卡片…")
         
         let pipe = Pipe()
         let proc = Process()
@@ -860,9 +915,9 @@ class AppViewModel: ObservableObject {
                                     
                                     await MainActor.run {
                                         if !self.cards.contains(where: { $0.id == candidate }) {
-                                            self.cards.append(CardItem(id: candidate, isSelected: true))
+                                            self.cards.append(self.makeCard(id: candidate))
                                             self.saveCards()
-                                            self.log("Found card: \(candidate)")
+                                            self.log("发现卡片： \(candidate)")
                                             NSSound(named: "Glass")?.play()
                                         }
                                     }
@@ -873,7 +928,7 @@ class AppViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self.log("Syslog monitor stopped: \(error.localizedDescription)")
+                    self.log("系统日志监控已停止： \(error.localizedDescription)")
                     self.isScanningCards = false
                 }
             }
@@ -884,30 +939,30 @@ class AppViewModel: ObservableObject {
         scanProcess?.terminate()
         scanProcess = nil
         isScanningCards = false
-        if statusText.contains("Double-click Side button") {
-            statusText = "Ready"
+        if statusText.contains("双击侧边按钮") {
+            statusText = "就绪"
         }
         saveCards()
-        log("Scanning stopped. Total cards: \(cards.count).")
+        log("扫描已停止，卡片总数： \(cards.count).")
     }
     
     // MARK: - Skin Application
     
     func applySkin() {
         guard let udid = device?.udid else {
-            errorMessage = "No iPhone connected."
+            errorMessage = "尚未连接 iPhone。"
             return
         }
         let selectedCardsWithSkin = cards.filter { $0.isSelected && $0.customImageURL != nil }
         guard !selectedCardsWithSkin.isEmpty else {
-            errorMessage = "Please assign a skin image to at least one selected card."
+            errorMessage = "请先为至少一张选中卡片设置皮肤图片。"
             return
         }
         
         isFlashing = true
         showLogs = true
         progress = 0.0
-        log("Starting skin application for \(selectedCardsWithSkin.count) card(s)...")
+        log("正在为 \(selectedCardsWithSkin.count) 张卡片应用皮肤…")
         let scriptDir = self.scriptDir
         
         Task.detached {
@@ -919,9 +974,9 @@ class AppViewModel: ObservableObject {
                 let preparedPath = "/tmp/aircard_prep_\(idx).png"
                 
                 await MainActor.run {
-                    self.statusText = "[\(idx + 1)/\(selectedCardsWithSkin.count)] Preparing skin for \(card.id.prefix(10))..."
+                    self.statusText = "[\(idx + 1)/\(selectedCardsWithSkin.count)] 正在为 \(card.id.prefix(10)) 准备皮肤…"
                     self.progress = (Double(idx) + 0.05) / totalCards
-                    self.log("Flashing card [\(idx + 1)/\(selectedCardsWithSkin.count)]: \(card.id)")
+                    self.log("正在写入卡片 [\(idx + 1)/\(selectedCardsWithSkin.count)]: \(card.logLabel)")
                 }
                 
                 // 1. Prepare image natively in Swift (0 external dependencies!)
@@ -963,7 +1018,7 @@ class AppViewModel: ObservableObject {
                     let message = error.localizedDescription
                     flashFailed = true
                     await MainActor.run {
-                        self.log("Failed to launch card flasher: \(message)")
+                        self.log("卡片写入程序启动失败： \(message)")
                     }
                     break
                 }
@@ -1026,12 +1081,13 @@ class AppViewModel: ObservableObject {
                 if flashProcess.terminationStatus != 0 {
                     flashFailed = true
                     await MainActor.run {
-                        self.log("Card update failed for \(card.id.prefix(12))...")
+                        self.log("卡片更新失败： \(card.logLabel)")
                     }
                     break
                 }
                 
                 await MainActor.run {
+                    self.rememberAppliedSkin(cardId: card.id, preparedURL: preparedURL, originalURL: imgURL)
                     self.progress = Double(idx + 1) / totalCards
                 }
             }
@@ -1040,13 +1096,13 @@ class AppViewModel: ObservableObject {
             await MainActor.run {
                 self.isFlashing = false
                 if didFail {
-                    self.statusText = "Failed to apply card skins."
-                    self.errorMessage = "One or more cards could not be updated. Check the log and try again."
-                    self.log("Skin application stopped after a card update failed.")
+                    self.statusText = "卡片皮肤应用失败。"
+                    self.errorMessage = "部分卡片更新失败，请查看日志后重试。"
+                    self.log("卡片更新失败，已停止应用皮肤。")
                 } else {
-                    self.statusText = "Complete! All cards updated."
+                    self.statusText = "完成！所有卡片均已更新。"
                     self.showSuccessAlert = true
-                    self.log("Skins successfully applied to all selected cards!")
+                    self.log("所有选中卡片的皮肤均已应用！")
                 }
             }
         }
@@ -1099,13 +1155,13 @@ class AppViewModel: ObservableObject {
                     self.loadedPasscodeTheme = themeInfo
                     self.targetTelephonyVersion = detectedVersion
                     self.isInspectingTheme = false
-                    self.statusText = "Loaded passcode theme '\(name)' (\(fileCount) assets)"
-                    self.log("Loaded .passthm: \(name) [\(detectedVersion)] with \(fileCount) image assets")
+                    self.statusText = "已加载密码主题“\(name)”（\(fileCount) 个资源）"
+                    self.log("已加载 .passthm：\(name) [\(detectedVersion)]，共 \(fileCount) 个图片资源")
                 }
             } else {
                 await MainActor.run {
                     self.isInspectingTheme = false
-                    self.errorMessage = "Failed to inspect .passthm file"
+                    self.errorMessage = "无法读取 .passthm 文件"
                 }
             }
         }
@@ -1114,15 +1170,15 @@ class AppViewModel: ObservableObject {
     func flashPasscodeTheme() {
         guard let theme = loadedPasscodeTheme else { return }
         guard let dev = device, dev.connected, let udid = dev.udid else {
-            errorMessage = "Please connect and trust your iPhone first."
+            errorMessage = "请先连接 iPhone，并在手机上信任此电脑。"
             return
         }
         
         isFlashing = true
         showLogs = true
         progress = 0.0
-        statusText = "Starting passcode theme flash..."
-        log("Flashing passcode theme '\(theme.name)' to device...")
+        statusText = "正在开始写入密码主题…"
+        log("正在向设备写入密码主题“\(theme.name)”…")
         let scriptDir = self.scriptDir
         let targetVer = self.targetTelephonyVersion
         let targetLang = self.passcodeLanguageTarget.code
@@ -1216,13 +1272,13 @@ class AppViewModel: ObservableObject {
                 self.isFlashing = false
                 if exitCode == 0 && self.errorMessage == nil {
                     self.progress = 1.0
-                    self.statusText = "Passcode theme applied successfully!"
+                    self.statusText = "密码主题已成功应用！"
                     self.showSuccessAlert = true
-                    self.log("Passcode theme '\(theme.name)' successfully flashed!")
+                    self.log("密码主题“\(theme.name)”已成功写入！")
                 } else {
-                    let err = self.errorMessage ?? "Flashing failed (exit code \(exitCode))"
+                    let err = self.errorMessage ?? "写入失败（退出码 \(exitCode)）"
                     self.statusText = err
-                    self.log("ERROR: \(err)")
+                    self.log("错误： \(err)")
                 }
             }
         }
@@ -1256,7 +1312,7 @@ class AppViewModel: ObservableObject {
         creatorPosterZoom = 1.0
         creatorPosterOffset = .zero
         updatePosterSlicing()
-        statusText = "Poster image loaded · Ready to frame and slice"
+        statusText = "已加载海报图片 · 可以调整取景并切片"
     }
     
     func setIndividualKey(digit: String, image: NSImage) {
@@ -1265,7 +1321,7 @@ class AppViewModel: ObservableObject {
         creatorIndividualZooms[digit] = 1.0
         selectedKeyDigit = digit
         updateIndividualKey(digit: digit)
-        statusText = "Updated key \(digit) · Drag on dialer to reposition or use zoom slider"
+        statusText = "已更新按键 \(digit) · 拖动调整位置或使用滑块缩放"
     }
     
     func updateIndividualKey(digit: String) {
@@ -1291,7 +1347,7 @@ class AppViewModel: ObservableObject {
         if selectedKeyDigit == digit {
             selectedKeyDigit = nil
         }
-        statusText = "Cleared key \(digit)"
+        statusText = "已清除按键 \(digit)"
     }
     
     func clearAllIndividualKeys() {
@@ -1300,7 +1356,7 @@ class AppViewModel: ObservableObject {
         creatorIndividualOffsets.removeAll()
         creatorIndividualZooms.removeAll()
         selectedKeyDigit = nil
-        statusText = "Cleared all custom keys"
+        statusText = "已清空所有自定义按键"
     }
     
     func adoptPosterSlicesToIndividualKeys() {
@@ -1310,7 +1366,7 @@ class AppViewModel: ObservableObject {
             creatorIndividualOffsets[k] = .zero
             creatorIndividualZooms[k] = 1.0
         }
-        statusText = "Adopted poster slices to individual keys"
+        statusText = "已使用海报切片填充独立按键"
     }
     
     func editLoadedThemeInCreator() {
@@ -1324,8 +1380,8 @@ class AppViewModel: ObservableObject {
         selectedKeyDigit = nil
         creatorSubMode = .individualKeys
         passcodeTabMode = .themeCreator
-        statusText = "Loaded '\(theme.name)' into Theme Creator (\(theme.keysPreview.count) keys ready to edit)"
-        log("Imported theme '\(theme.name)' into Creator for custom editing")
+        statusText = "已将“\(theme.name)”加载到编辑器（\(theme.keysPreview.count) 个按键可编辑）"
+        log("已将主题“\(theme.name)”导入编辑器")
     }
     
     func clearCreator() {
@@ -1334,17 +1390,17 @@ class AppViewModel: ObservableObject {
         creatorPosterOffset = .zero
         creatorSlicedKeys.removeAll()
         clearAllIndividualKeys()
-        statusText = "Theme Creator reset"
+        statusText = "主题编辑器已重置"
     }
     
     func flashCreatedTheme() {
         let keys = effectiveCreatorKeys
         guard !keys.isEmpty else {
-            errorMessage = "Please add at least one key icon or import a poster image first."
+            errorMessage = "请先添加至少一个按键图标或导入海报图片。"
             return
         }
         guard let dev = device, dev.connected, dev.udid != nil else {
-            errorMessage = "Please connect and trust your iPhone first."
+            errorMessage = "请先连接 iPhone，并在手机上信任此电脑。"
             return
         }
         
@@ -1353,12 +1409,12 @@ class AppViewModel: ObservableObject {
             language: passcodeLanguageTarget,
             boldMode: passcodeBoldTarget
         ) else {
-            errorMessage = "Failed to package theme for flashing."
+            errorMessage = "主题打包失败，无法写入。"
             return
         }
         
         let themeInfo = PasscodeThemeInfo(
-            name: "Created Theme",
+            name: "自定义主题",
             filePath: stagedURL.path,
             detectedVersion: targetTelephonyVersion,
             fileCount: keys.count * 4,
@@ -1377,16 +1433,19 @@ struct WalletCardView: View {
     let onPickImage: () -> Void
     let onClearImage: () -> Void
     let onDelete: () -> Void
+    let onRename: (String) -> Void
     
     @State private var isHovered = false
     @State private var isTargeted = false
     @State private var copied = false
+    @State private var showRename = false
+    @State private var draftName = ""
     
     var body: some View {
         VStack(spacing: 10) {
             // Card Mockup
             ZStack {
-                if let img = card.customImage {
+                if let img = card.previewImage {
                     // Custom Skin Applied
                     ZStack(alignment: .topTrailing) {
                         Image(nsImage: img)
@@ -1404,6 +1463,7 @@ struct WalletCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         
                         // Top Right Clear Button
+                        if card.customImage != nil {
                         Button(action: onClearImage) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 20))
@@ -1412,7 +1472,8 @@ struct WalletCardView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(10)
-                        .help("Remove skin")
+                        .help("取消待写入皮肤")
+                        }
                         
                         // Hover overlay: Change Skin
                         if isHovered {
@@ -1420,7 +1481,7 @@ struct WalletCardView: View {
                                 Spacer()
                                 HStack {
                                     Spacer()
-                                    Label("Change Skin", systemImage: "photo.badge.arrow.forward")
+                                    Label("更换皮肤", systemImage: "photo.badge.arrow.forward")
                                         .font(.caption)
                                         .fontWeight(.semibold)
                                         .padding(.horizontal, 12)
@@ -1478,12 +1539,12 @@ struct WalletCardView: View {
                                 .scaleEffect(isHovered ? 1.08 : 1.0)
                                 .animation(.spring(response: 0.3), value: isHovered)
                             
-                            Text(isTargeted ? "Drop image here" : "Assign Card Skin")
+                            Text(isTargeted ? "将图片拖到此处" : "设置卡片皮肤")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
                                 .foregroundColor(.primary)
                             
-                            Text("Click to browse or drag image")
+                            Text("点击选择或拖入图片")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -1542,14 +1603,38 @@ struct WalletCardView: View {
                 return false
             }
             
+            HStack(spacing: 6) {
+                Text(card.name.isEmpty ? "卡片 \(cardIndex + 1)" : card.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(card.name.isEmpty ? "卡片 \(cardIndex + 1)" : card.name)
+                Spacer(minLength: 4)
+                Button {
+                    draftName = card.name
+                    showRename = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.plain)
+                .help("重命名卡片")
+                .accessibilityLabel("重命名卡片")
+            }
+            .padding(.horizontal, 4)
+
+            if card.previewImage != nil {
+                Text(card.customImage != nil ? "待写入的皮肤" : "上次写入的皮肤")
+                    .font(.caption2)
+                    .foregroundColor(card.customImage != nil ? .orange : .secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+            }
+
             // Bottom Info & Controls
             HStack(spacing: 8) {
                 Toggle("", isOn: $card.isSelected)
                     .labelsHidden()
-                    .help("Include in flash")
-                
-                Text("Card #\(cardIndex + 1)")
-                    .font(.system(size: 12, weight: .semibold))
+                    .help("选中以写入")
                 
                 // Monospace Hash Pill with Copy
                 HStack(spacing: 4) {
@@ -1568,7 +1653,7 @@ struct WalletCardView: View {
                             .foregroundColor(copied ? .green : .secondary)
                     }
                     .buttonStyle(.plain)
-                    .help(copied ? "Copied!" : "Copy full hash")
+                    .help(copied ? "已复制！" : "复制完整哈希值")
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -1582,7 +1667,7 @@ struct WalletCardView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
                         .font(.system(size: 12))
-                        .help("Skin assigned and ready")
+                        .help("皮肤已设置，可以写入")
                 }
                 
                 // Delete button
@@ -1592,9 +1677,16 @@ struct WalletCardView: View {
                         .foregroundColor(.secondary.opacity(0.7))
                 }
                 .buttonStyle(.plain)
-                .help("Remove from list")
+                .help("从列表移除")
             }
             .padding(.horizontal, 4)
+        }
+        .alert("重命名卡片", isPresented: $showRename) {
+            TextField("例如：招商银行储蓄卡", text: $draftName)
+            Button("取消", role: .cancel) {}
+            Button("保存") { onRename(draftName) }
+        } message: {
+            Text("名称仅用于本地识别，不会修改手机中的卡片。留空可恢复默认名称。")
         }
         .padding(10)
         .background(
@@ -1670,7 +1762,8 @@ struct ContentView: View {
                                     cardIndex: idx,
                                     onPickImage: { openCardImagePicker(for: vm.cards[idx].id) },
                                     onClearImage: { vm.clearCardImage(for: vm.cards[idx].id) },
-                                    onDelete: { vm.deleteCard(id: vm.cards[idx].id) }
+                                    onDelete: { vm.deleteCard(id: vm.cards[idx].id) },
+                                    onRename: { vm.renameCard(id: vm.cards[idx].id, name: $0) }
                                 )
                             }
                         }
@@ -1698,13 +1791,13 @@ struct ContentView: View {
                 .background(Color(NSColor.controlBackgroundColor))
         }
         .frame(minWidth: 880, minHeight: 680)
-        .alert("Success!", isPresented: $vm.showSuccessAlert) {
-            Button("OK") {}
+        .alert("操作成功", isPresented: $vm.showSuccessAlert) {
+            Button("确定") {}
         } message: {
             if vm.selectedTab == .passcodeThemes {
-                Text("Passcode theme successfully applied!\n\nLock your iPhone (or restart) to see your new passcode keypad.")
+                Text("密码主题已应用！\n\n锁定 iPhone（或重启）即可查看新的密码键盘。")
             } else {
-                Text("Skins successfully applied to all selected cards!\n\nPlease force-close the Wallet app on your iPhone (or reboot) to see your new designs.")
+                Text("所有选中卡片的皮肤均已应用！\n\n请在 iPhone 上彻底关闭钱包 App 后重新打开（或重启手机），以查看新皮肤。")
             }
         }
         .sheet(isPresented: $showCredits) {
@@ -1717,8 +1810,8 @@ struct ContentView: View {
             if newTab == .passcodeThemes && vm.isScanningCards {
                 vm.stopCardScanning()
             }
-            if vm.statusText.contains("Double-click Side button") {
-                vm.statusText = "Ready"
+            if vm.statusText.contains("双击侧边按钮") {
+                vm.statusText = "就绪"
             }
         }
     }
@@ -1744,7 +1837,7 @@ struct ContentView: View {
                         .foregroundColor(.accentColor)
                         .clipShape(Capsule())
                 }
-                Text("Wallet Cards & Passcode Themes")
+                Text("钱包卡片皮肤与锁屏密码主题")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -1780,7 +1873,7 @@ struct ContentView: View {
                             .lineLimit(1)
                     }
                 } else {
-                    Text("No iPhone (USB)")
+                    Text("未连接 iPhone")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -1792,7 +1885,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(vm.isCheckingDevice)
-                .help("Refresh device connection")
+                .help("刷新设备连接")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -1801,7 +1894,7 @@ struct ContentView: View {
             .cornerRadius(16)
             
             Button(action: { showCredits = true }) {
-                Label("Credits", systemImage: "heart.fill")
+                Label("作者与致谢", systemImage: "heart.fill")
                     .foregroundColor(.pink)
             }
             .buttonStyle(.bordered)
@@ -1824,7 +1917,7 @@ struct ContentView: View {
                         Image(systemName: "wave.3.forward.circle.fill")
                             .frame(width: 16, height: 16)
                     }
-                    Text(vm.isScanningCards ? "Stop Scanning" : "Scan Cards")
+                    Text(vm.isScanningCards ? "停止扫描" : "扫描卡片")
                         .fontWeight(.semibold)
                 }
             }
@@ -1834,25 +1927,25 @@ struct ContentView: View {
             .disabled(vm.device?.connected != true)
             
             Button(action: { vm.showAddCardSheet = true }) {
-                Label("Add Manually", systemImage: "plus")
+                Label("手动添加", systemImage: "plus")
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
             
             if !vm.cards.isEmpty {
                 Button(action: openBulkImagePicker) {
-                    Label("Set Skin for All...", systemImage: "photo.on.rectangle.angled")
+                    Label("批量设置皮肤…", systemImage: "photo.on.rectangle.angled")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                .help("Assign one skin to all selected cards")
+                .help("为所有选中卡片设置同一皮肤")
             }
             
             Spacer()
             
             if !vm.cards.isEmpty {
                 HStack(spacing: 8) {
-                    Button("Select All") {
+                    Button("全选") {
                         for idx in vm.cards.indices { vm.cards[idx].isSelected = true }
                     }
                     .buttonStyle(.link)
@@ -1860,7 +1953,7 @@ struct ContentView: View {
                     
                     Text("·").foregroundColor(.secondary)
                     
-                    Button("Deselect All") {
+                    Button("取消全选") {
                         for idx in vm.cards.indices { vm.cards[idx].isSelected = false }
                     }
                     .buttonStyle(.link)
@@ -1868,7 +1961,7 @@ struct ContentView: View {
                     
                     Text("·").foregroundColor(.secondary)
                     
-                    Button("Clear All") {
+                    Button("全部清空") {
                         vm.clearAllCards()
                     }
                     .buttonStyle(.link)
@@ -1888,18 +1981,18 @@ struct ContentView: View {
                 .foregroundColor(.blue)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text("Live Scanner Active")
+                Text("正在扫描卡片")
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.blue)
-                Text("Double-click Side button (Apple Pay), pass Face ID, then tap your card.")
+                Text("双击侧边按钮打开 Apple Pay，通过面容 ID 验证后，轻点卡片。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
             
             Spacer()
             
-            Button("Done") {
+            Button("完成") {
                 vm.stopCardScanning()
             }
             .buttonStyle(.bordered)
@@ -1916,7 +2009,7 @@ struct ContentView: View {
                 .font(.system(size: 54))
                 .foregroundColor(.accentColor.opacity(0.8))
             
-            Text("No Cards Detected Yet")
+            Text("尚未发现卡片")
                 .font(.title3)
                 .fontWeight(.bold)
             
@@ -1925,19 +2018,19 @@ struct ContentView: View {
                     Text("1.")
                         .fontWeight(.bold)
                         .foregroundColor(.accentColor)
-                    Text("Click **Scan Cards** in the toolbar above.")
+                    Text("点击上方工具栏中的**扫描卡片**。")
                 }
                 HStack(alignment: .top, spacing: 10) {
                     Text("2.")
                         .fontWeight(.bold)
                         .foregroundColor(.accentColor)
-                    Text("On your iPhone, **double-click the Side button** (Apple Pay), authenticate with **Face ID**, and **tap your card**.")
+                    Text("在 iPhone 上**双击侧边按钮**打开 Apple Pay，通过**面容 ID** 验证，然后**轻点卡片**。")
                 }
                 HStack(alignment: .top, spacing: 10) {
                     Text("3.")
                         .fontWeight(.bold)
                         .foregroundColor(.accentColor)
-                    Text("Your card will be detected immediately!")
+                    Text("检测到的卡片将自动显示在这里。")
                 }
             }
             .font(.subheadline)
@@ -1949,14 +2042,14 @@ struct ContentView: View {
             
             HStack(spacing: 12) {
                 Button(action: { vm.startCardScanning() }) {
-                    Label("Start Scanning", systemImage: "wave.3.forward.circle.fill")
+                    Label("开始扫描", systemImage: "wave.3.forward.circle.fill")
                         .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
                 .disabled(vm.device?.connected != true)
                 
-                Button("Add Hashes Manually") {
+                Button("手动添加卡片哈希值") {
                     vm.showAddCardSheet = true
                 }
                 .buttonStyle(.bordered)
@@ -1982,21 +2075,21 @@ struct ContentView: View {
             
             if vm.passcodeTabMode == .applyTheme {
                 Button(action: { openPasscodeThemePicker() }) {
-                    Label("Choose .passthm File...", systemImage: "folder.badge.plus")
+                    Label("选择 .passthm 文件…", systemImage: "folder.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
                 .controlSize(.regular)
             } else {
                 Button(action: { openPosterPicker() }) {
-                    Label(vm.creatorPosterImage == nil ? "Choose Poster..." : "Change Poster...", systemImage: "photo")
+                    Label(vm.creatorPosterImage == nil ? "选择海报…" : "更换海报…", systemImage: "photo")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
                 .controlSize(.regular)
                 
                 Button(action: { openSavePasscodeThemePanel() }) {
-                    Label("Export .passthm...", systemImage: "square.and.arrow.up")
+                    Label("导出 .passthm…", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
@@ -2007,14 +2100,14 @@ struct ContentView: View {
             
             // Target Version Picker
             HStack(spacing: 6) {
-                Text("Target:")
+                Text("目标版本：")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Picker("", selection: $vm.targetTelephonyVersion) {
                     Text("TelephonyUI-10 (iOS 18+)").tag("TelephonyUI-10")
                     Text("TelephonyUI-9 (iOS 16–17)").tag("TelephonyUI-9")
                     Text("TelephonyUI-8 (iOS 14–15)").tag("TelephonyUI-8")
-                    Text("Universal (All 8, 9, 10)").tag("all")
+                    Text("通用（8、9、10）").tag("all")
                 }
                 .pickerStyle(.menu)
                 .controlSize(.regular)
@@ -2025,7 +2118,7 @@ struct ContentView: View {
                 .foregroundColor(.secondary)
             
             if vm.passcodeTabMode == .applyTheme {
-                Button("Clear Theme") {
+                Button("清除主题") {
                     vm.loadedPasscodeTheme = nil
                 }
                 .buttonStyle(.link)
@@ -2033,7 +2126,7 @@ struct ContentView: View {
                 .foregroundColor(.red)
                 .disabled(vm.loadedPasscodeTheme == nil)
             } else {
-                Button("Clear All") {
+                Button("全部清空") {
                     vm.clearCreator()
                 }
                 .buttonStyle(.link)
@@ -2071,13 +2164,13 @@ struct ContentView: View {
             // Right Column: Authentic iPhone Lock Screen Mockup
             VStack(spacing: 8) {
                 HStack {
-                    Text("Lock Screen Keypad Preview")
+                    Text("锁屏密码键盘预览")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
                     Spacer()
                     if vm.loadedPasscodeTheme != nil {
-                        Text("Custom Theme Loaded")
+                        Text("已加载自定义主题")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.green)
                     }
@@ -2113,7 +2206,7 @@ struct ContentView: View {
     
     private var applyThemeControlsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Passcode Theme File")
+            Text("密码主题文件")
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
@@ -2140,25 +2233,25 @@ struct ContentView: View {
                         }
                     }
                     
-                    Text("\(theme.fileCount) artwork assets loaded · Ready to flash to iPhone")
+                    Text("已加载 \(theme.fileCount) 个图片资源 · 可以写入 iPhone")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     
                     HStack(spacing: 8) {
                         Button(action: { vm.editLoadedThemeInCreator() }) {
-                            Label("Edit in Creator", systemImage: "pencil.and.outline")
+                            Label("在编辑器中修改", systemImage: "pencil.and.outline")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.purple)
                         .controlSize(.regular)
                         
-                        Button("Change...") {
+                        Button("更换…") {
                             openPasscodeThemePicker()
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
                         
-                        Button("Clear") {
+                        Button("清空") {
                             vm.loadedPasscodeTheme = nil
                         }
                         .buttonStyle(.bordered)
@@ -2175,17 +2268,17 @@ struct ContentView: View {
                         .font(.system(size: 32))
                         .foregroundColor(.purple)
                     
-                    Text("Drop .passthm file here")
+                    Text("将 .passthm 文件拖到此处")
                         .font(.caption)
                         .fontWeight(.semibold)
                     
-                    Text("Supports .passthm, .passtheme, or .zip packages from Cowabunga or Nugget")
+                    Text("支持 Cowabunga 或 Nugget 的 .passthm、.passtheme 和 .zip 主题包")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 8)
                     
-                    Button("Choose File...") {
+                    Button("选择文件…") {
                         openPasscodeThemePicker()
                     }
                     .buttonStyle(.borderedProminent)
@@ -2288,13 +2381,13 @@ struct ContentView: View {
             // Right Column: Authentic iPhone Lock Screen Mockup
             VStack(spacing: 8) {
                 HStack {
-                    Text("Interactive iPhone Lock Screen Preview")
+                    Text("iPhone 锁屏交互预览")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
                     Spacer()
                     if vm.creatorSubMode == .posterSlice && vm.creatorPosterImage != nil {
-                        Text("Drag dialer to pan · Use slider to zoom")
+                        Text("拖动键盘调整位置 · 使用滑块缩放")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -2327,7 +2420,7 @@ struct ContentView: View {
             if vm.creatorSubMode == .posterSlice {
                 // 1. Poster Source Section
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Poster Artwork")
+                    Text("海报图片")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
@@ -2345,18 +2438,18 @@ struct ContentView: View {
                                 )
                             
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Artwork Loaded")
+                                Text("已加载图片")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                 
                                 HStack(spacing: 8) {
-                                    Button("Change...") {
+                                    Button("更换…") {
                                         openPosterPicker()
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                                     
-                                    Button("Remove") {
+                                    Button("移除") {
                                         vm.clearCreator()
                                     }
                                     .buttonStyle(.bordered)
@@ -2374,11 +2467,11 @@ struct ContentView: View {
                                 .font(.system(size: 26))
                                 .foregroundColor(.purple)
                             
-                            Text("Drop poster or wallpaper here")
+                            Text("将海报或壁纸拖到此处")
                                 .font(.caption)
                                 .fontWeight(.medium)
                             
-                            Button("Choose Image...") {
+                            Button("选择图片…") {
                                 openPosterPicker()
                             }
                             .buttonStyle(.borderedProminent)
@@ -2402,21 +2495,21 @@ struct ContentView: View {
                 
                 // 2. Style Section
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Slicing Style")
+                    Text("切片样式")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
                     
                     Picker("", selection: $vm.creatorMaskToCircles) {
-                        Text("Seamless Poster").tag(false)
-                        Text("Circle Buttons").tag(true)
+                        Text("无缝海报").tag(false)
+                        Text("圆形按键").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: vm.creatorMaskToCircles) { _, _ in
                         vm.updatePosterSlicing()
                     }
                     
-                    Text(vm.creatorMaskToCircles ? "Artwork is clipped into individual circular button icons." : "Seamless artwork spans across dialer keys without circular cuts (Adobe Dog style).")
+                    Text(vm.creatorMaskToCircles ? "将图片裁剪为独立的圆形按键图标。" : "图片在键盘按键间连续显示，不进行圆形裁剪（Adobe Dog 风格）。")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2427,14 +2520,14 @@ struct ContentView: View {
                 // 3. Framing & Zoom Section
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("Zoom & Framing")
+                        Text("缩放与取景")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
                         
                         Spacer()
                         
-                        Button("Reset Position") {
+                        Button("重置位置") {
                             withAnimation(.spring()) {
                                 vm.creatorPosterZoom = 1.0
                                 vm.creatorPosterOffset = .zero
@@ -2453,7 +2546,7 @@ struct ContentView: View {
                             .font(.caption)
                         
                         Slider(value: $vm.creatorPosterZoom, in: 0.5...3.0, step: 0.05) {
-                            Text("Zoom")
+                            Text("缩放")
                         }
                         .onChange(of: vm.creatorPosterZoom) { _, _ in
                             vm.updatePosterSlicing()
@@ -2473,7 +2566,7 @@ struct ContentView: View {
                         Image(systemName: "hand.draw")
                             .foregroundColor(.secondary)
                             .font(.caption2)
-                        Text("Drag anywhere on the dialer preview to reposition")
+                        Text("在键盘预览中拖动以调整位置")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -2482,13 +2575,13 @@ struct ContentView: View {
                 // Individual Keys Mode Controls
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Individual Keys")
+                        Text("独立按键")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
                         Spacer()
                         if let sel = vm.selectedKeyDigit {
-                            Button("Deselect Key \(sel)") {
+                            Button("取消选择按键 \(sel)") {
                                 vm.selectedKeyDigit = nil
                             }
                             .buttonStyle(.link)
@@ -2500,12 +2593,12 @@ struct ContentView: View {
                         // Per-key framing controls
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Label("Key \(selDigit) Framing", systemImage: "crop")
+                                Label("按键 \(selDigit) 取景", systemImage: "crop")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.purple)
                                 Spacer()
-                                Button("Reset") {
+                                Button("重置") {
                                     withAnimation(.spring()) {
                                         vm.creatorIndividualOffsets[selDigit] = .zero
                                         vm.creatorIndividualZooms[selDigit] = 1.0
@@ -2549,19 +2642,19 @@ struct ContentView: View {
                                 Image(systemName: "hand.draw")
                                     .foregroundColor(.secondary)
                                     .font(.caption2)
-                                Text("Drag Key \(selDigit) on dialer preview to reposition")
+                                Text("在预览中拖动按键 \(selDigit) 以调整位置")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
                             
                             HStack(spacing: 8) {
-                                Button("Change Image...") {
+                                Button("更换图片…") {
                                     openIndividualKeyPicker(for: selDigit)
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                                 
-                                Button("Remove") {
+                                Button("移除") {
                                     vm.clearIndividualKey(digit: selDigit)
                                 }
                                 .buttonStyle(.bordered)
@@ -2580,7 +2673,7 @@ struct ContentView: View {
                         Divider()
                     }
                     
-                    Text("Click any key on the dialer to select it, pan the image, adjust zoom, or drop files.")
+                    Text("点击任意按键以选中，然后平移图片、调整缩放或拖入文件。")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2588,21 +2681,21 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.accentColor)
-                        Text("\(vm.creatorCustomKeys.count) of 10 keys configured")
+                        Text("已设置 \(vm.creatorCustomKeys.count) / 10 个按键")
                             .font(.caption)
                             .fontWeight(.medium)
                     }
                     
                     HStack(spacing: 8) {
                         if !vm.creatorSlicedKeys.isEmpty {
-                            Button("Fill from Poster") {
+                            Button("使用海报填充") {
                                 vm.adoptPosterSlicesToIndividualKeys()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.regular)
                         }
                         
-                        Button("Clear All Keys") {
+                        Button("清空所有按键") {
                             vm.clearAllIndividualKeys()
                         }
                         .buttonStyle(.bordered)
@@ -2784,17 +2877,17 @@ struct ContentView: View {
         }
         .contextMenu {
             if vm.creatorSubMode == .individualKeys {
-                Button("Change Key \(btn.digit)...") {
+                Button("更换按键 \(btn.digit)…") {
                     openIndividualKeyPicker(for: btn.digit)
                 }
                 if customIndividualImage != nil {
-                    Button("Reset Position & Zoom") {
+                    Button("重置位置与缩放") {
                         vm.creatorIndividualOffsets[btn.digit] = .zero
                         vm.creatorIndividualZooms[btn.digit] = 1.0
                         dragKeyStartOffsets[btn.digit] = .zero
                         vm.updateIndividualKey(digit: btn.digit)
                     }
-                    Button("Clear Key \(btn.digit)") {
+                    Button("清除按键 \(btn.digit)") {
                         vm.clearIndividualKey(digit: btn.digit)
                     }
                 }
@@ -2836,7 +2929,7 @@ struct ContentView: View {
                                 .foregroundColor(.white.opacity(0.9))
                         )
                     
-                    Text("Enter Passcode")
+                    Text("输入密码")
                         .font(.system(size: 14, weight: .regular))
                         .foregroundColor(.white.opacity(0.95))
                         .padding(.top, 2)
@@ -2863,11 +2956,11 @@ struct ContentView: View {
                 
                 // Lock Screen Footer (Height ~28)
                 HStack {
-                    Text("Emergency")
+                    Text("紧急情况")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text("Cancel")
+                    Text("取消")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundColor(.white.opacity(0.9))
                 }
@@ -2892,7 +2985,7 @@ struct ContentView: View {
                 Image(systemName: "slider.horizontal.3")
                     .foregroundColor(.purple)
                     .font(.system(size: 13, weight: .semibold))
-                Text("Flash & Language Target")
+                Text("写入与语言设置")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
@@ -2901,7 +2994,7 @@ struct ContentView: View {
             
             // 1. Language Target Selector
             VStack(alignment: .leading, spacing: 4) {
-                Text("System Language:")
+                Text("手机系统语言：")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                 
@@ -2916,7 +3009,7 @@ struct ContentView: View {
             
             // 2. Bold / Font Weight Selector
             VStack(alignment: .leading, spacing: 4) {
-                Text("Font Weight / Style:")
+                Text("字体粗细 / 样式：")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                 
@@ -2937,12 +3030,12 @@ struct ContentView: View {
                     .padding(.top, 1)
                 
                 if vm.passcodeLanguageTarget == .all && vm.passcodeBoldTarget == .both {
-                    Text("Universal mode flashes ~600 files for all languages & Bold text. Selecting a specific language (e.g. Ukrainian) speeds up flashing dramatically.")
+                    Text("通用模式会写入约 600 个文件，覆盖所有语言和粗体样式。选择手机使用的具体语言可显著缩短写入时间。")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("Fast mode selected: only targets \(vm.passcodeLanguageTarget.rawValue) with \(vm.passcodeBoldTarget.rawValue).")
+                    Text("快速模式：仅写入\(vm.passcodeLanguageTarget.rawValue)，字体为\(vm.passcodeBoldTarget.rawValue)。")
                         .font(.system(size: 9))
                         .foregroundColor(.primary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2959,7 +3052,7 @@ struct ContentView: View {
     private var activityLogView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Activity Log")
+                Text("运行日志")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -2968,13 +3061,13 @@ struct ContentView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.logs.joined(separator: "\n"), forType: .string)
                 } label: {
-                    Label("Copy All", systemImage: "doc.on.doc")
+                    Label("复制全部", systemImage: "doc.on.doc")
                 }
                 .buttonStyle(.link)
                 .font(.caption2)
                 .disabled(vm.logs.isEmpty)
-                .help("Copy the complete activity log")
-                Button("Clear") {
+                .help("复制完整运行日志")
+                Button("清空") {
                     vm.logs.removeAll()
                 }
                 .buttonStyle(.link)
@@ -3040,26 +3133,26 @@ struct ContentView: View {
                             let count = vm.effectiveCreatorKeys.count
                             let targetInfo = "\(vm.targetTelephonyVersion) · \(vm.passcodeLanguageTarget.code.uppercased()) · \(vm.passcodeBoldTarget.code)"
                             if count > 0 {
-                                Text("Theme Creator · \(count) of 10 keys configured · Target: \(targetInfo)")
+                                Text("主题编辑器 · 已设置 \(count) / 10 个按键 · 目标：\(targetInfo)")
                                     .font(.system(size: 10))
                                     .foregroundColor(.secondary)
                             } else {
-                                Text("Theme Creator · Import a poster or drop icons onto keys")
+                                Text("主题编辑器 · 导入海报或将图标拖到按键上")
                                     .font(.system(size: 10))
                                     .foregroundColor(.secondary)
                             }
                         } else if let theme = vm.loadedPasscodeTheme {
                             let targetInfo = "\(vm.targetTelephonyVersion) · \(vm.passcodeLanguageTarget.code.uppercased()) · \(vm.passcodeBoldTarget.code)"
-                            Text("\(theme.fileCount) source assets loaded · Target: \(targetInfo)")
+                            Text("已加载 \(theme.fileCount) 个源资源 · 目标：\(targetInfo)")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                         } else {
-                            Text("No .passthm loaded · Select a theme package to flash")
+                            Text("尚未加载 .passthm · 请选择要写入的主题包")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                         }
                     } else if !vm.cards.isEmpty {
-                        Text("\(vm.cards.filter { $0.isSelected }.count) of \(vm.cards.count) cards selected · \(readyToFlashCount) ready to flash")
+                        Text("已选择 \(vm.cards.filter { $0.isSelected }.count) / \(vm.cards.count) 张卡片 · \(readyToFlashCount) 张可以写入")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
                     }
@@ -3072,7 +3165,7 @@ struct ContentView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "terminal")
                             .frame(width: 14, height: 14)
-                        Text("Log")
+                        Text("日志")
                         Image(systemName: vm.showLogs ? "chevron.down" : "chevron.up")
                             .font(.system(size: 9, weight: .bold))
                     }
@@ -3094,7 +3187,7 @@ struct ContentView: View {
                                     Image(systemName: "lock.shield.fill")
                                         .frame(width: 16, height: 16)
                                 }
-                                Text(vm.isFlashing ? "Flashing Passcode..." : "Flash to iPhone")
+                                Text(vm.isFlashing ? "正在写入密码主题…" : "写入 iPhone")
                                     .fontWeight(.semibold)
                             }
                             .padding(.horizontal, 8)
@@ -3114,7 +3207,7 @@ struct ContentView: View {
                                     Image(systemName: "lock.shield.fill")
                                         .frame(width: 16, height: 16)
                                 }
-                                Text(vm.isFlashing ? "Flashing Passcode..." : "Flash Passcode Theme")
+                                Text(vm.isFlashing ? "正在写入密码主题…" : "写入密码主题")
                                     .fontWeight(.semibold)
                             }
                             .padding(.horizontal, 8)
@@ -3135,7 +3228,7 @@ struct ContentView: View {
                                 Image(systemName: "sparkles")
                                     .frame(width: 16, height: 16)
                             }
-                            Text(vm.isFlashing ? "Flashing Cards..." : (readyToFlashCount > 0 ? "Flash Skins (\(readyToFlashCount) Cards)" : "Flash Skins"))
+                            Text(vm.isFlashing ? "正在写入卡片…" : (readyToFlashCount > 0 ? "写入皮肤（\(readyToFlashCount) 张）" : "写入皮肤"))
                                 .fontWeight(.semibold)
                         }
                         .padding(.horizontal, 8)
@@ -3151,7 +3244,7 @@ struct ContentView: View {
             HStack {
                 Spacer()
                 HStack(spacing: 4) {
-                    Text("By")
+                    Text("作者")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Link("@mak5er", destination: URL(string: "https://github.com/mak5er")!)
@@ -3160,6 +3253,11 @@ struct ContentView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Link("@Lumid-Off", destination: URL(string: "https://github.com/Lumid-Off")!)
+                        .font(.system(size: 10))
+                    Text("&")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Link("wizzer", destination: URL(string: "https://wizzer.cn")!)
                         .font(.system(size: 10))
                 }
             }
@@ -3178,7 +3276,7 @@ struct ContentView: View {
                 .font(.title2)
                 .fontWeight(.bold)
             
-            Text("Apple Wallet Skins & Passcode Themes for iOS 18+")
+            Text("适用于 iOS 18+ 的钱包卡片皮肤与密码主题")
                 .font(.caption)
                 .foregroundColor(.secondary)
             
@@ -3188,7 +3286,7 @@ struct ContentView: View {
                 HStack {
                     Image(systemName: "person.crop.circle.fill")
                         .foregroundColor(.blue)
-                    Text("Developer:")
+                    Text("开发者：")
                         .fontWeight(.medium)
                     Link("@mak5er", destination: URL(string: "https://github.com/mak5er")!)
                     Text("·")
@@ -3199,7 +3297,7 @@ struct ContentView: View {
                 HStack {
                     Image(systemName: "person.crop.circle.fill")
                         .foregroundColor(.blue)
-                    Text("Developer:")
+                    Text("开发者：")
                         .fontWeight(.medium)
                     Link("@Lumid-Off", destination: URL(string: "https://github.com/Lumid-Off")!)
                     Text("·")
@@ -3208,20 +3306,28 @@ struct ContentView: View {
                 }
                 
                 HStack {
+                    Image(systemName: "person.crop.circle.fill")
+                        .foregroundColor(.blue)
+                    Text("开发者：")
+                        .fontWeight(.medium)
+                    Link("wizzer", destination: URL(string: "https://wizzer.cn")!)
+                }
+
+                HStack {
                     Image(systemName: "bolt.shield.fill")
                         .foregroundColor(.orange)
-                    Text("Core Exploit:")
+                    Text("核心技术：")
                         .fontWeight(.medium)
-                    Text("airlift (AirTraffic sync escape)")
+                    Text("airlift（AirTraffic 同步沙盒逃逸）")
                         .foregroundColor(.secondary)
                 }
                 
                 HStack {
                     Image(systemName: "lock.shield.fill")
                         .foregroundColor(.purple)
-                    Text("Passcode Themes:")
+                    Text("密码主题：")
                         .fontWeight(.medium)
-                    Text(".passthm standard (Cowabunga / Nugget)")
+                    Text(".passthm 标准（Cowabunga / Nugget）")
                         .foregroundColor(.secondary)
                 }
             }
@@ -3231,7 +3337,7 @@ struct ContentView: View {
             
             Divider()
             
-            Button("Close") {
+            Button("关闭") {
                 showCredits = false
             }
             .buttonStyle(.borderedProminent)
@@ -3243,9 +3349,9 @@ struct ContentView: View {
     
     private var addCardSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Add Card Hashes Manually")
+            Text("手动添加卡片哈希值")
                 .font(.headline)
-            Text("Paste one or more card hashes (separated by spaces, commas, or newlines):")
+            Text("粘贴一个或多个卡片哈希值（使用空格、逗号或换行分隔）：")
                 .font(.caption)
                 .foregroundColor(.secondary)
             
@@ -3256,7 +3362,7 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
             
             HStack {
-                Button("Cancel") {
+                Button("取消") {
                     vm.showAddCardSheet = false
                     vm.manualHashInput = ""
                 }
@@ -3265,7 +3371,7 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                Button("Add to List") {
+                Button("添加到列表") {
                     vm.addCardHash(vm.manualHashInput)
                     vm.showAddCardSheet = false
                     vm.manualHashInput = ""
@@ -3284,7 +3390,7 @@ struct ContentView: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a custom skin for card \(cardId.prefix(12))..."
+        panel.message = "为卡片 \(cardId.prefix(12)) 选择自定义皮肤…"
         if panel.runModal() == .OK, let url = panel.url {
             vm.setCardImage(for: cardId, url: url)
         }
@@ -3295,7 +3401,7 @@ struct ContentView: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a skin to assign to all selected cards..."
+        panel.message = "为所有选中卡片选择皮肤…"
         if panel.runModal() == .OK, let url = panel.url {
             for card in vm.cards where card.isSelected {
                 vm.setCardImage(for: card.id, url: url)
@@ -3312,7 +3418,7 @@ struct ContentView: View {
         ]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a .passthm passcode theme package..."
+        panel.message = "选择 .passthm 密码主题包…"
         if panel.runModal() == .OK, let url = panel.url {
             vm.inspectPasscodeTheme(url: url)
         }
@@ -3320,8 +3426,8 @@ struct ContentView: View {
     
     private func openPosterPicker() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Poster Image"
-        panel.message = "Select a wallpaper or photo to slice for the passcode keypad..."
+        panel.title = "选择海报图片"
+        panel.message = "选择壁纸或照片，用于生成密码键盘切片…"
         panel.allowedContentTypes = [
             UTType.png,
             UTType.jpeg,
@@ -3339,8 +3445,8 @@ struct ContentView: View {
     
     private func openIndividualKeyPicker(for digit: String) {
         let panel = NSOpenPanel()
-        panel.title = "Choose Icon for Key \(digit)"
-        panel.message = "Select an icon or image for key \(digit)..."
+        panel.title = "选择按键 \(digit) 的图标"
+        panel.message = "为按键 \(digit) 选择图标或图片…"
         panel.allowedContentTypes = [
             UTType.png,
             UTType.jpeg,
@@ -3359,13 +3465,13 @@ struct ContentView: View {
     private func openSavePasscodeThemePanel() {
         let keys = vm.effectiveCreatorKeys
         guard !keys.isEmpty else {
-            vm.errorMessage = "Please configure at least one key before exporting."
+            vm.errorMessage = "请先设置至少一个按键再导出。"
             return
         }
         
         let panel = NSSavePanel()
-        panel.title = "Save Passcode Theme"
-        panel.prompt = "Export"
+        panel.title = "保存密码主题"
+        panel.prompt = "导出"
         panel.nameFieldStringValue = "CustomTheme.passthm"
         panel.allowedContentTypes = [UTType(filenameExtension: "passthm") ?? .data]
         panel.canCreateDirectories = true
@@ -3373,11 +3479,11 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 try PasscodeThemeExporter.exportTheme(keys: keys, targetURL: url)
-                vm.statusText = "Theme exported successfully to \(url.lastPathComponent)"
-                vm.log("Exported .passthm to \(url.path)")
+                vm.statusText = "主题已导出至 \(url.lastPathComponent)"
+                vm.log("已导出 .passthm 至 \(url.path)")
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch {
-                vm.errorMessage = "Failed to export theme: \(error.localizedDescription)"
+                vm.errorMessage = "主题导出失败：\(error.localizedDescription)"
             }
         }
     }
@@ -3434,6 +3540,7 @@ struct AirCardApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.locale, Locale(identifier: "zh-Hans"))
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

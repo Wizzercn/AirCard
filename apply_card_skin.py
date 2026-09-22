@@ -208,8 +208,8 @@ def require_airtraffic_device(udid: str) -> None:
     result = run_json([os.fspath(AIRTRAFFIC_HOST), "--probe", udid], timeout=20)
     if result.get("exitCode") != 0 or not result.get("ok") or not result.get("syncAllowed"):
         raise ConnectionError(
-            f"AirTraffic handshake failed: {result.get('error', 'SyncAllowed not received')}. "
-            "Unlock the iPhone and check its connection before retrying."
+            f"AirTraffic 握手失败： {result.get('error', '未收到 SyncAllowed')}. "
+            "请解锁 iPhone 并检查连接后重试。"
         )
 
 
@@ -307,7 +307,7 @@ def write_files_batch(
     if not files:
         return True
 
-    report("Checking AirTraffic connection before staging...")
+    report("正在检查 AirTraffic 连接…")
     require_airtraffic_device(udid)
     for attempt in range(1, max(1, retries) + 1):
         try:
@@ -334,16 +334,16 @@ def write_files_batch(
                 archive_path.write_bytes(build_archive_multi(target, files))
                 books_path.write_bytes(build_books(identifiers))
 
-                report(f"Backing up Books state (attempt {attempt}/{max(1, retries)})...")
+                report(f"正在备份 Books 状态（第 {attempt}/{max(1, retries)} 次尝试）…")
                 snapshot = native("snapshot-books", udid, os.fspath(snapshot_root))
                 if not operation_ok(snapshot):
-                    report(f"Books backup failed: {snapshot}")
+                    report(f"Books 状态备份失败： {snapshot}")
                     if attempt < retries:
                         time.sleep(0.4 * attempt)
                         continue
                     return False
 
-                report("Staging artwork on device...")
+                report("正在将图片暂存到设备…")
                 stage = native(
                     "stage",
                     udid,
@@ -355,7 +355,7 @@ def write_files_batch(
                     os.fspath(snapshot_root),
                 )
                 if not operation_ok(stage):
-                    report(f"Staging failed: {stage}")
+                    report(f"暂存失败： {stage}")
                     if attempt < retries:
                         time.sleep(0.4 * attempt)
                         continue
@@ -369,15 +369,15 @@ def write_files_batch(
                 try:
                     atc = run_json_streaming(atc_cmd, timeout=timeout, on_progress=progress_callback)
                     if not atc.get("ok"):
-                        report(f"AirTraffic failed: {atc.get('error', 'unknown error')}")
+                        report(f"AirTraffic 操作失败： {atc.get('error', 'unknown error')}")
                 finally:
-                    report("Restoring Books state and cleaning up...")
+                    report("正在恢复 Books 状态并清理临时文件…")
                     finish = native(
                         "finish-write", udid, source, link_destination,
                         recovered, os.fspath(snapshot_root),
                     )
                     if not operation_ok(finish):
-                        report(f"Cleanup failed: {finish}")
+                        report(f"清理失败： {finish}")
 
             ok = bool(atc.get("exitCode") == 0 and atc.get("ok") and operation_ok(finish))
             if ok:
@@ -386,7 +386,7 @@ def write_files_batch(
             # Repeating a stalled connection for every asset can take many minutes.
             raise
         except Exception as error:
-            report(f"Batch attempt {attempt} failed: {error}")
+            report(f"第 {attempt} 次批量写入失败： {error}")
 
         if attempt < retries:
             time.sleep(0.4 * attempt)

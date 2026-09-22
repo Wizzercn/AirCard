@@ -100,7 +100,7 @@ int main(int argc, const char *argv[]) {
         signal(SIGPIPE, SIG_IGN);
         signal(SIGALRM, TimeoutHandler);
         alarm(probeOnly ? 15 : 300);
-        PrintJSON(@{ @"type": @"atc_status", @"message": @"Connecting to AirTraffic..." });
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"正在连接 AirTraffic…" });
         ATHostConnectionRef connection =
             ATHostConnectionCreate((__bridge CFStringRef)deviceIdentifier);
         if (!connection) {
@@ -109,7 +109,7 @@ int main(int argc, const char *argv[]) {
             return 2;
         }
 
-        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for SyncAllowed..." });
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"正在等待同步许可（SyncAllowed）…" });
         BOOL syncAllowed = NO;
         for (NSUInteger index = 0; index < 8 && !syncAllowed; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
@@ -145,7 +145,7 @@ int main(int argc, const char *argv[]) {
             (__bridge CFDictionaryRef)@{},
             (__bridge CFDictionaryRef)hostInfo);
 
-        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for ReadyForSync..." });
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"正在等待同步就绪（ReadyForSync）…" });
         BOOL ready = NO;
         for (NSUInteger index = 0; index < 12 && !ready; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
@@ -169,7 +169,7 @@ int main(int argc, const char *argv[]) {
             (__bridge CFDictionaryRef)@{ @"Book": @1 },
             (__bridge CFDictionaryRef)@{});
 
-        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for asset manifest..." });
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"正在等待资源清单…" });
         NSDictionary *manifest = nil;
         for (NSUInteger index = 0; index < 20 && !manifest; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
