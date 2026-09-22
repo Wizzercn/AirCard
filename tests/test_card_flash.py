@@ -25,6 +25,7 @@ class CardFlashTests(unittest.TestCase):
 
             with (
                 patch.object(aircard_backend, "write_file", write_file),
+                patch.object(aircard_backend, "write_files_batch", return_value=False),
                 redirect_stdout(io.StringIO()),
             ):
                 result = aircard_backend.cmd_flash("device", "card", str(image_path))
@@ -66,6 +67,7 @@ class CardFlashTests(unittest.TestCase):
 
             with (
                 patch.object(aircard_backend, "write_file", write_file),
+                patch.object(aircard_backend, "write_files_batch", return_value=False),
                 redirect_stdout(output),
             ):
                 result = aircard_backend.cmd_flash("device", "card", str(image_path))
@@ -84,6 +86,7 @@ class CardFlashTests(unittest.TestCase):
 
             with (
                 patch.object(aircard_backend, "write_file", write_file),
+                patch.object(aircard_backend, "write_files_batch", return_value=False),
                 patch.object(
                     aircard_backend,
                     "build_card_assets",

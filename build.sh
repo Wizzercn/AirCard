@@ -67,6 +67,7 @@ fi
 # directly, so the bundle needs no libimobiledevice tooling.
 cp build/device_helper "$BIN_DIR/"
 cp build/airtraffic_host "$BIN_DIR/"
+cp build/airtraffic_discovery.dylib "$BIN_DIR/"
 
 # Copy python backend scripts
 cp apply_card_skin.py "$RESOURCES_DIR/"
@@ -76,7 +77,7 @@ cp card_assets.py "$RESOURCES_DIR/"
 
 # A bundle without these cannot talk to a device at all, so fail here instead
 # of shipping an app that reports "No iPhone found" for every user.
-for tool in device_helper airtraffic_host; do
+for tool in device_helper airtraffic_host airtraffic_discovery.dylib; do
     if [ ! -x "${BIN_DIR}/${tool}" ]; then
         echo "ERROR: ${BIN_DIR}/${tool} is missing from the bundle." >&2
         exit 1

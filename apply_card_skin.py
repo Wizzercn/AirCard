@@ -7,6 +7,7 @@ import os
 import plistlib
 import posixpath
 import secrets
+import selectors
 import stat
 import struct
 import subprocess
@@ -129,36 +130,61 @@ def run_json(command: list[str], timeout: int) -> dict:
 
 
 def run_json_streaming(command: list[str], timeout: int, on_progress=None) -> dict:
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
+    # Drain both pipes while enforcing a deadline for the entire process,
+    # including periods with no output or an incomplete JSON line.
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + timeout
     result = None
+    pending = b""
+    stderr = bytearray()
+
+    def consume(line):
+        nonlocal result
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if isinstance(value, dict):
+            if value.get("type") in ("atc_progress", "atc_status"):
+                if on_progress:
+                    on_progress(value)
+            else:
+                result = value
+
     try:
-        if proc.stdout:
-            for line in iter(proc.stdout.readline, ""):
-                line_str = line.strip()
-                if not line_str:
-                    continue
-                try:
-                    val = json.loads(line_str)
-                    if isinstance(val, dict):
-                        if val.get("type") == "atc_progress" and on_progress:
-                            on_progress(val)
-                        result = val
-                except json.JSONDecodeError:
-                    pass
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        raise TimeoutError(f"{Path(command[0]).name} timed out after {timeout}s")
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            selector.register(proc.stderr, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                    elif key.fileobj is proc.stderr:
+                        stderr.extend(chunk)
+                        del stderr[:-65536]
+                    else:
+                        pending += chunk
+                        while b"\n" in pending:
+                            line, pending = pending.split(b"\n", 1)
+                            consume(line)
+            if pending:
+                consume(pending)
+            proc.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(f"{Path(command[0]).name} timed out after {timeout}s") from error
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
 
     if result is None:
-        stderr = proc.stderr.read() if proc.stderr else ""
-        raise RuntimeError(f"{Path(command[0]).name} failed: {stderr}")
+        raise RuntimeError(f"{Path(command[0]).name} failed: {stderr.decode(errors='replace')}")
     result["exitCode"] = proc.returncode
     return result
 
@@ -177,7 +203,18 @@ def operation_ok(result: dict) -> bool:
     )
 
 
+def require_airtraffic_device(udid: str) -> None:
+    """Check the actual AirTraffic handshake before staging any files."""
+    result = run_json([os.fspath(AIRTRAFFIC_HOST), "--probe", udid], timeout=20)
+    if result.get("exitCode") != 0 or not result.get("ok") or not result.get("syncAllowed"):
+        raise ConnectionError(
+            f"AirTraffic handshake failed: {result.get('error', 'SyncAllowed not received')}. "
+            "Unlock the iPhone and check its connection before retrying."
+        )
+
+
 def write_file(udid: str, target: str, leaf: str, payload: bytes, retries: int = 3) -> bool:
+    require_airtraffic_device(udid)
     for attempt in range(1, max(1, retries) + 1):
         try:
             token = secrets.token_hex(10)
@@ -232,22 +269,21 @@ def write_file(udid: str, target: str, leaf: str, payload: bytes, retries: int =
                 atc_cmd = [os.fspath(AIRTRAFFIC_HOST), udid]
                 for identifier, destination in zip(identifiers, destinations):
                     atc_cmd.extend((identifier, destination))
-                atc = run_json(atc_cmd, timeout=120)
-
-                finish = native(
-                    "finish-write",
-                    udid,
-                    source,
-                    link_destination,
-                    recovered,
-                    os.fspath(snapshot_root),
-                )
+                try:
+                    atc = run_json(atc_cmd, timeout=120)
+                finally:
+                    finish = native(
+                        "finish-write", udid, source, link_destination,
+                        recovered, os.fspath(snapshot_root),
+                    )
 
             ok = bool(atc.get("exitCode") == 0 and atc.get("ok") and operation_ok(finish))
             if ok:
                 return True
-        except Exception:
-            pass
+        except (TimeoutError, subprocess.TimeoutExpired):
+            raise
+        except Exception as error:
+            print(f"Write attempt {attempt} failed: {error}", file=sys.stderr, flush=True)
 
         if attempt < retries:
             time.sleep(0.3 * attempt)
@@ -262,9 +298,17 @@ def write_files_batch(
     retries: int = 3,
     progress_callback=None,
 ) -> bool:
+    def report(message):
+        if progress_callback:
+            progress_callback({"type": "atc_status", "message": message})
+        else:
+            print(message, file=sys.stderr, flush=True)
+
     if not files:
         return True
 
+    report("Checking AirTraffic connection before staging...")
+    require_airtraffic_device(udid)
     for attempt in range(1, max(1, retries) + 1):
         try:
             token = secrets.token_hex(10)
@@ -290,13 +334,16 @@ def write_files_batch(
                 archive_path.write_bytes(build_archive_multi(target, files))
                 books_path.write_bytes(build_books(identifiers))
 
+                report(f"Backing up Books state (attempt {attempt}/{max(1, retries)})...")
                 snapshot = native("snapshot-books", udid, os.fspath(snapshot_root))
                 if not operation_ok(snapshot):
+                    report(f"Books backup failed: {snapshot}")
                     if attempt < retries:
                         time.sleep(0.4 * attempt)
                         continue
                     return False
 
+                report("Staging artwork on device...")
                 stage = native(
                     "stage",
                     udid,
@@ -308,6 +355,7 @@ def write_files_batch(
                     os.fspath(snapshot_root),
                 )
                 if not operation_ok(stage):
+                    report(f"Staging failed: {stage}")
                     if attempt < retries:
                         time.sleep(0.4 * attempt)
                         continue
@@ -318,25 +366,27 @@ def write_files_batch(
                     atc_cmd.extend((identifier, destination))
 
                 timeout = max(120, len(files) * 2)
-                if progress_callback:
+                try:
                     atc = run_json_streaming(atc_cmd, timeout=timeout, on_progress=progress_callback)
-                else:
-                    atc = run_json(atc_cmd, timeout=timeout)
-
-                finish = native(
-                    "finish-write",
-                    udid,
-                    source,
-                    link_destination,
-                    recovered,
-                    os.fspath(snapshot_root),
-                )
+                    if not atc.get("ok"):
+                        report(f"AirTraffic failed: {atc.get('error', 'unknown error')}")
+                finally:
+                    report("Restoring Books state and cleaning up...")
+                    finish = native(
+                        "finish-write", udid, source, link_destination,
+                        recovered, os.fspath(snapshot_root),
+                    )
+                    if not operation_ok(finish):
+                        report(f"Cleanup failed: {finish}")
 
             ok = bool(atc.get("exitCode") == 0 and atc.get("ok") and operation_ok(finish))
             if ok:
                 return True
-        except Exception:
-            pass
+        except (TimeoutError, subprocess.TimeoutExpired):
+            # Repeating a stalled connection for every asset can take many minutes.
+            raise
+        except Exception as error:
+            report(f"Batch attempt {attempt} failed: {error}")
 
         if attempt < retries:
             time.sleep(0.4 * attempt)

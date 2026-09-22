@@ -2964,6 +2964,16 @@ struct ContentView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
                 Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(vm.logs.joined(separator: "\n"), forType: .string)
+                } label: {
+                    Label("Copy All", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.link)
+                .font(.caption2)
+                .disabled(vm.logs.isEmpty)
+                .help("Copy the complete activity log")
                 Button("Clear") {
                     vm.logs.removeAll()
                 }
@@ -2978,6 +2988,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(vm.logs.enumerated()), id: \.offset) { idx, log in
                             Text(log)
+                                .textSelection(.enabled)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.secondary)
                                 .id(idx)

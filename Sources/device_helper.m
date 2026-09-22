@@ -1,6 +1,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 #include <signal.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -774,14 +775,21 @@ static BOOL TargetGate(NSDictionary *summary, BOOL *tested) {
     return YES;
 }
 
-static BOOL SendAll(AMDServiceConnectionRef service, NSData *data) {
+static BOOL SendAll(AMDServiceConnectionRef service, NSData *data,
+                    size_t *bytesSent, int *sendResult, int *sendErrno) {
     const uint8_t *cursor = data.bytes;
     size_t remaining = data.length;
     while (remaining) {
-        int sent = AMDServiceConnectionSend(service, cursor, remaining);
-        if (sent <= 0) return NO;
+        // Bound each send instead of passing a multi-megabyte archive at once.
+        size_t chunk = MIN(remaining, (size_t)65536);
+        errno = 0;
+        int sent = AMDServiceConnectionSend(service, cursor, chunk);
+        *sendResult = sent;
+        *sendErrno = errno;
+        if (sent <= 0 || (size_t)sent > chunk) return NO;
         cursor += sent;
         remaining -= (size_t)sent;
+        *bytesSent += (size_t)sent;
     }
     return YES;
 }
@@ -819,13 +827,20 @@ static NSDictionary *Stage(DeviceSession *session, NSArray<NSString *> *args) {
     int messageStatus = -1;
     int responseStatus = -1;
     BOOL archiveSent = NO;
+    size_t archiveBytesSent = 0;
+    int archiveSendResult = 0;
+    int archiveSendErrno = 0;
     CFTypeRef response = NULL;
     if (serviceStatus == 0 && zipService) {
+        int socket = AMDServiceConnectionGetSocket(zipService);
+        struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
+        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
         messageStatus = AMDServiceConnectionSendMessage(
             zipService,
             (__bridge CFTypeRef)@{ @"MediaSubdir": source },
             kCFPropertyListBinaryFormat_v1_0);
-        if (messageStatus == 0) archiveSent = SendAll(zipService, archive);
+        if (messageStatus == 0) archiveSent = SendAll(zipService, archive,
+            &archiveBytesSent, &archiveSendResult, &archiveSendErrno);
         if (archiveSent) {
             int socket = AMDServiceConnectionGetSocket(zipService);
             struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
@@ -863,6 +878,10 @@ static NSDictionary *Stage(DeviceSession *session, NSArray<NSString *> *args) {
               @"zipMessageStatus": @(messageStatus),
               @"zipResponseStatus": @(responseStatus),
               @"archiveSent": @(archiveSent),
+              @"archiveBytes": @(archive.length),
+              @"archiveBytesSent": @(archiveBytesSent),
+              @"archiveSendResult": @(archiveSendResult),
+              @"archiveSendErrno": @(archiveSendErrno),
               @"sourceObjectsPresent": @(sourceObjects),
               @"booksWritten": @(booksWritten) };
 }

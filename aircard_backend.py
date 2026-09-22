@@ -157,46 +157,80 @@ def cmd_flash(udid: str, card_hash: str, image_path: str) -> bool:
     }))
     sys.stdout.flush()
 
-    try:
-        ok = write_files_batch(udid, pkpass_dir, asset_payloads)
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        ok = False
-
-    if not ok:
-        # Fallback to individual writes if batch fails
-        for asset, payload in asset_payloads:
-            try:
-                ok_single = write_file(udid, pkpass_dir, asset, payload)
-            except Exception:
-                ok_single = False
-            if not ok_single:
-                all_ok = False
-
-    # Clear cache with batch
-    cache_leaves = [(leaf, b"corrupted") for leaf in CACHE_FILES]
-    for ext in [".cache", ".pkcache"]:
-        cache_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}{ext}"
-        step += 1
+    def report(message):
         print(json.dumps({
-            "type": "progress",
-            "card": card_hash,
+            "type": "progress", "card": card_hash,
             "step": step,
-            "total": total_steps,
-            "message": f"Invalidating cache ({ext})..."
-        }))
-        sys.stdout.flush()
-        try:
-            ok_cache = write_files_batch(udid, cache_dir, cache_leaves)
-        except Exception:
-            ok_cache = False
-        if not ok_cache:
-            for leaf, payload in cache_leaves:
-                try:
-                    write_file(udid, cache_dir, leaf, payload)
-                except Exception:
-                    pass
+            "total": total_steps, "message": message,
+        }), flush=True)
 
-    step += 1
+    def batch_progress(base, label):
+        def callback(event):
+            nonlocal step
+            if event.get("type") == "atc_status":
+                report(event["message"])
+            else:
+                step = max(step, base + event.get("index", 0))
+                report(f"{label}: {event.get('leaf', '')}")
+        return callback
+
+    try:
+        try:
+            ok = write_files_batch(
+                udid, pkpass_dir, asset_payloads,
+                progress_callback=batch_progress(step, "Artwork sent"),
+            )
+        except (ConnectionError, TimeoutError, subprocess.TimeoutExpired):
+            raise
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            ok = False
+
+        if not ok:
+            report("Batch failed; retrying artwork individually...")
+            for index, (asset, payload) in enumerate(asset_payloads, 1):
+                report(f"Writing {asset} individually...")
+                try:
+                    ok_single = write_file(udid, pkpass_dir, asset, payload)
+                except (ConnectionError, TimeoutError, subprocess.TimeoutExpired):
+                    raise
+                except Exception:
+                    ok_single = False
+                all_ok = all_ok and ok_single
+                step = max(step, 1 + index)
+        step = 1 + len(asset_payloads)
+
+        cache_leaves = [(leaf, b"corrupted") for leaf in CACHE_FILES]
+        for ext in [".cache", ".pkcache"]:
+            cache_dir = f"/var/mobile/Library/Passes/Cards/{card_hash}{ext}"
+            base = step
+            report(f"Invalidating cache ({ext})...")
+            try:
+                ok_cache = write_files_batch(
+                    udid, cache_dir, cache_leaves,
+                    progress_callback=batch_progress(base, "Cache invalidation sent"),
+                )
+            except (ConnectionError, TimeoutError, subprocess.TimeoutExpired):
+                raise
+            except Exception:
+                ok_cache = False
+            if not ok_cache:
+                for leaf, payload in cache_leaves:
+                    report(f"Invalidating {ext}/{leaf} individually...")
+                    try:
+                        write_file(udid, cache_dir, leaf, payload)
+                    except (ConnectionError, TimeoutError, subprocess.TimeoutExpired):
+                        raise
+                    except Exception:
+                        pass
+            step = base + len(cache_leaves)
+    except (ConnectionError, TimeoutError, subprocess.TimeoutExpired) as error:
+        print(json.dumps({
+            "type": "error", "card": card_hash,
+            "message": f"Device operation failed: {error}",
+        }), flush=True)
+        return False
+
+    step = total_steps
     if not all_ok:
         print(json.dumps({
             "type": "error",
@@ -477,6 +511,9 @@ def cmd_flash_passthm(
 
             def make_progress_handler(base: int):
                 def on_atc_progress(p: dict):
+                    if p.get("type") == "atc_status":
+                        print(json.dumps({"type": "progress", "message": p["message"]}), flush=True)
+                        return
                     idx = p.get("index", 0)
                     leaf = p.get("leaf", "")
                     curr = min(base + idx, total_steps)
@@ -485,7 +522,7 @@ def cmd_flash_passthm(
                         "step": curr,
                         "total": total_steps,
                         "leaf": leaf,
-                        "message": f"Writing {leaf} ({curr}/{total_steps})..."
+                        "message": p.get("message") or f"Writing {leaf} ({curr}/{total_steps})..."
                     }))
                     sys.stdout.flush()
                 return on_atc_progress

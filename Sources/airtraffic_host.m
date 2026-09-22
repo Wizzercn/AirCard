@@ -66,21 +66,22 @@ static BOOL ManifestContains(NSDictionary *manifest, NSString *identifier) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
-        if (argc < 6 || argc % 2 != 0) {
+        BOOL probeOnly = argc == 3 && strcmp(argv[1], "--probe") == 0;
+        if (!probeOnly && (argc < 6 || argc % 2 != 0)) {
             PrintJSON(@{ @"ok": @NO,
                          @"error": @"usage: airtraffic_host udid id path [id path ...]" });
             return 64;
         }
 
-        NSUInteger pairCount = (NSUInteger)(argc - 2) / 2;
+        NSUInteger pairCount = probeOnly ? 0 : (NSUInteger)(argc - 2) / 2;
         if (pairCount > 2048) {
             PrintJSON(@{ @"ok": @NO, @"error": @"too many assets" });
             return 64;
         }
 
-        NSString *deviceIdentifier = [NSString stringWithUTF8String:argv[1]];
+        NSString *deviceIdentifier = [NSString stringWithUTF8String:argv[probeOnly ? 2 : 1]];
         NSMutableArray<NSDictionary *> *assets = NSMutableArray.array;
-        for (int index = 2; index < argc; index += 2) {
+        for (int index = 2; !probeOnly && index < argc; index += 2) {
             NSString *identifier = [NSString stringWithUTF8String:argv[index]];
             NSString *destination =
                 [NSString stringWithUTF8String:argv[index + 1]];
@@ -98,7 +99,8 @@ int main(int argc, const char *argv[]) {
 
         signal(SIGPIPE, SIG_IGN);
         signal(SIGALRM, TimeoutHandler);
-        alarm(300);
+        alarm(probeOnly ? 15 : 300);
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"Connecting to AirTraffic..." });
         ATHostConnectionRef connection =
             ATHostConnectionCreate((__bridge CFStringRef)deviceIdentifier);
         if (!connection) {
@@ -107,6 +109,7 @@ int main(int argc, const char *argv[]) {
             return 2;
         }
 
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for SyncAllowed..." });
         BOOL syncAllowed = NO;
         for (NSUInteger index = 0; index < 8 && !syncAllowed; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
@@ -125,6 +128,13 @@ int main(int argc, const char *argv[]) {
             return 3;
         }
 
+        if (probeOnly) {
+            ATHostConnectionRelease(connection);
+            alarm(0);
+            PrintJSON(@{ @"ok": @YES, @"syncAllowed": @YES });
+            return 0;
+        }
+
         NSDictionary *hostInfo = HostInfo();
         ATHostConnectionSendHostInfo(
             connection, (__bridge CFDictionaryRef)hostInfo);
@@ -135,6 +145,7 @@ int main(int argc, const char *argv[]) {
             (__bridge CFDictionaryRef)@{},
             (__bridge CFDictionaryRef)hostInfo);
 
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for ReadyForSync..." });
         BOOL ready = NO;
         for (NSUInteger index = 0; index < 12 && !ready; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
@@ -158,6 +169,7 @@ int main(int argc, const char *argv[]) {
             (__bridge CFDictionaryRef)@{ @"Book": @1 },
             (__bridge CFDictionaryRef)@{});
 
+        PrintJSON(@{ @"type": @"atc_status", @"message": @"Waiting for asset manifest..." });
         NSDictionary *manifest = nil;
         for (NSUInteger index = 0; index < 20 && !manifest; index++) {
             CFDictionaryRef raw = ATHostConnectionReadMessage(connection);
