@@ -30,7 +30,7 @@
 
 ### macOS 通用 DMG
 
-1. 可从[原项目发布页面](https://github.com/mak5er/AirCard/releases)下载 `AirCard.dmg`；本仓库的修改版可按下方步骤从源码构建，安装包位于 `build/AirCard.dmg`。
+1. 下载 `AirCard.dmg`；本仓库的修改版可按下方步骤从源码构建，安装包位于 `build/AirCard.dmg`。
 2. 打开 `AirCard.dmg`，将 **AirCard.app** 拖入**应用程序**文件夹。
 3. 安装包同时包含 Apple Silicon 和 Intel Mac 版本。
 
